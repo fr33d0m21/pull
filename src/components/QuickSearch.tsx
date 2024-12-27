@@ -2,26 +2,27 @@ import { useState, useEffect, useRef } from 'react';
 import { Search, X } from 'lucide-react';
 import { useData } from '../context/DataContext';
 import { useNavigate } from 'react-router-dom';
+import { WorkingItem } from '../types';
 
 export default function QuickSearch() {
   const [isOpen, setIsOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const { orders } = useData();
+  const { workingItems } = useData();
   const navigate = useNavigate();
   const searchRef = useRef<HTMLDivElement>(null);
 
-  // Filter orders based on removal ID or order ID
-  const filteredOrders = orders.filter(order => {
+  // Filter orders based on order ID, SKU, or FNSKU
+  const filteredOrders = workingItems.filter(item => {
     if (!searchTerm) return false;
     
     const searchLower = searchTerm.toLowerCase();
-    const removalId = (order.removalIdName || order.orderId || '').toLowerCase();
-    const orderId = (order.orderId || '').toLowerCase();
-    const sku = (order.sku || '').toLowerCase();
+    const orderId = (item.order_id || '').toLowerCase();
+    const sku = (item.item?.sku || '').toLowerCase();
+    const fnsku = (item.item?.fnsku || '').toLowerCase();
     
-    return removalId.includes(searchLower) || 
-           orderId.includes(searchLower) || 
-           sku.includes(searchLower);
+    return orderId.includes(searchLower) || 
+           sku.includes(searchLower) || 
+           fnsku.includes(searchLower);
   }).slice(0, 5); // Limit to 5 results
 
   useEffect(() => {
@@ -85,7 +86,6 @@ export default function QuickSearch() {
         <div className="fixed inset-0 z-50 overflow-y-auto">
           <div className="min-h-screen px-4 text-center">
             <div className="fixed inset-0 bg-gray-500 bg-opacity-25 transition-opacity" />
-            
             <div className="inline-block w-full max-w-2xl mt-16 text-left align-middle transition-all transform">
               <div className="relative bg-white rounded-xl shadow-2xl">
                 <div className="flex items-center p-4 border-b">
@@ -93,7 +93,7 @@ export default function QuickSearch() {
                   <input
                     type="text"
                     autoFocus
-                    placeholder="Search removal IDs, order IDs, or SKUs..."
+                    placeholder="Search order IDs, SKUs, or FNSKUs..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="flex-1 px-4 py-2 text-sm focus:outline-none"
@@ -109,23 +109,23 @@ export default function QuickSearch() {
                 {searchTerm && (
                   <div className="p-2 max-h-96 overflow-y-auto">
                     {filteredOrders.length > 0 ? (
-                      filteredOrders.map((order) => (
+                      filteredOrders.map((item) => (
                         <button
-                          key={order.id}
-                          onClick={() => handleSelect(order.orderId)}
+                          key={item.id}
+                          onClick={() => handleSelect(item.order_id)}
                           className="w-full p-4 text-left hover:bg-gray-50 rounded-lg focus:outline-none focus:bg-gray-50"
                         >
                           <div className="flex justify-between items-start">
                             <div>
                               <p className="font-medium text-gray-900">
-                                {order.removalIdName || order.orderId}
+                                {item.order_id}
                               </p>
                               <p className="text-sm text-gray-500">
-                                SKU: {order.sku}
+                                SKU: {item.item?.sku} | FNSKU: {item.item?.fnsku}
                               </p>
                             </div>
                             <span className="text-sm text-gray-500">
-                              {order.orderStatus}
+                              {item.processing_status}
                             </span>
                           </div>
                         </button>

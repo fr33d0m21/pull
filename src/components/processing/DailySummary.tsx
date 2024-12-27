@@ -1,15 +1,15 @@
 import { useMemo, useState } from 'react';
 import { Package, Clock, CheckCircle, AlertTriangle } from 'lucide-react';
-import { RemovalOrder } from '../../types';
+import { WorkingItem } from '../../types';
 import { isToday, parseISO, isThisWeek, isThisMonth, startOfDay, endOfDay } from 'date-fns';
 
 interface DailySummaryProps {
-  orders: RemovalOrder[];
+  items: WorkingItem[];
 }
 
 type DateFilter = 'day' | 'week' | 'month' | 'custom';
 
-export default function DailySummary({ orders }: DailySummaryProps) {
+export default function DailySummary({ items }: DailySummaryProps) {
   const [dateFilter, setDateFilter] = useState<DateFilter>('day');
   const [customRange, setCustomRange] = useState({
     start: new Date().toISOString().split('T')[0],
@@ -18,6 +18,7 @@ export default function DailySummary({ orders }: DailySummaryProps) {
 
   const stats = useMemo(() => {
     const isInRange = (date: string) => {
+      if (!date) return false;
       const parsedDate = parseISO(date);
       switch (dateFilter) {
         case 'day':
@@ -35,42 +36,42 @@ export default function DailySummary({ orders }: DailySummaryProps) {
       }
     };
 
-    const filteredOrders = orders.filter(order => isInRange(order.requestDate));
+    const filteredItems = items.filter(item => isInRange(item.request_date));
     
-    // Group orders by tracking number
+    // Group items by tracking number
     const trackingGroups = new Map<string, {
-      orders: RemovalOrder[];
+      items: WorkingItem[];
       totalItems: number;
     }>();
 
-    filteredOrders.forEach(order => {
-      if (order.trackingNumber) {
-        if (!trackingGroups.has(order.trackingNumber)) {
-          trackingGroups.set(order.trackingNumber, { orders: [], totalItems: 0 });
+    filteredItems.forEach(item => {
+      if (item.tracking_number) {
+        if (!trackingGroups.has(item.tracking_number)) {
+          trackingGroups.set(item.tracking_number, { items: [], totalItems: 0 });
         }
-        const group = trackingGroups.get(order.trackingNumber)!;
-        group.orders.push(order);
-        group.totalItems += order.shippedQuantity || 0;
+        const group = trackingGroups.get(item.tracking_number)!;
+        group.items.push(item);
+        group.totalItems += item.actual_return_qty || 0;
       }
     });
 
-    // Count working queue groups (groups with any unprocessed SKUs)
-    const workingQueueCount = Array.from(trackingGroups.values()).filter(({ orders }) =>
-      orders.some(order => order.processingStatus !== 'completed')
+    // Count working queue groups (groups with any unprocessed items)
+    const workingQueueCount = Array.from(trackingGroups.values()).filter(({ items }) =>
+      items.some(item => item.processing_status !== 'completed')
     ).length;
 
-    // Count completed groups (all SKUs in group processed)
-    const completedGroupsCount = Array.from(trackingGroups.values()).filter(({ orders }) =>
-      orders.every(order => order.processingStatus === 'completed')
+    // Count completed groups (all items in group processed)
+    const completedGroupsCount = Array.from(trackingGroups.values()).filter(({ items }) =>
+      items.every(item => item.processing_status === 'completed')
     ).length;
     
     // Count total SKUs
-    const totalExpectedSKUs = filteredOrders.reduce((sum, order) => 
-      sum + (order.shippedQuantity || 0), 0);
+    const totalExpectedSKUs = filteredItems.reduce((sum, item) => 
+      sum + (item.item?.requested_quantity || 0), 0);
     
     // Count missing items
-    const missingItems = filteredOrders.reduce((sum, order) => 
-      sum + (order.items?.filter(item => item.condition === 'Missing').length || 0), 0
+    const missingItems = filteredItems.reduce((sum, item) => 
+      sum + (item.actual_return_qty < (item.item?.requested_quantity || 0) ? 1 : 0), 0
     );
 
     return {
@@ -79,7 +80,7 @@ export default function DailySummary({ orders }: DailySummaryProps) {
       expectedSKUs: totalExpectedSKUs,
       missingItems
     };
-  }, [orders, dateFilter, customRange]);
+  }, [items, dateFilter, customRange]);
 
   return (
     <div className="space-y-4">

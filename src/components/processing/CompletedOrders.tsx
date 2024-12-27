@@ -1,183 +1,245 @@
-import { useMemo, useState } from 'react';
-import { Search, Filter, ChevronDown, ChevronUp } from 'lucide-react';
-import { RemovalOrder } from '../../types';
-import { format, parseISO, isToday } from 'date-fns';
-import { generateUniqueId } from '../../utils/uniqueKey';
+import React, { useState, useMemo } from 'react';
+import { CompletedOrder } from '../../types';
 
-interface CompletedOrdersProps {
-  orders: RemovalOrder[];
+interface GroupedOrder {
+  id: string;
+  trackingNumber: string;
+  carrier: string;
+  items: CompletedOrder[];
+  isExpanded: boolean;
 }
 
-export default function CompletedOrders({ orders }: CompletedOrdersProps) {
+interface CompletedOrdersProps {
+  items: CompletedOrder[];
+}
+
+export default function CompletedOrders({ items }: CompletedOrdersProps) {
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterDate, setFilterDate] = useState<'all' | 'today'>('today');
-  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
+  const [dateFilter, setDateFilter] = useState<'today' | 'week' | 'month' | 'all'>('all');
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
 
-  const completedOrders = useMemo(() => {
-    return orders
-      .filter(order => order.processingStatus === 'completed')
-      .filter(order => {
-        const matchesSearch = !searchTerm || 
-          order.orderId.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          order.sku.toLowerCase().includes(searchTerm.toLowerCase());
+  console.log('CompletedOrders - Initial items:', items);
 
-        const matchesDate = filterDate === 'all' || 
-          (filterDate === 'today' && isToday(parseISO(order.processingDate || '')));
+  // Filter orders based on search term and date
+  const filteredOrders = useMemo(() => {
+    console.log('CompletedOrders - Filtering orders with searchTerm:', searchTerm, 'dateFilter:', dateFilter);
+    const filtered = items.filter(order => {
+      // Search filter
+      const searchLower = searchTerm.toLowerCase();
+      const matchesSearch =
+        order.order_id.toLowerCase().includes(searchLower) ||
+        order.item?.sku?.toLowerCase().includes(searchLower) ||
+        order.item?.fnsku?.toLowerCase().includes(searchLower);
 
-        return matchesSearch && matchesDate;
-      })
-      .sort((a, b) => 
-        new Date(b.processingDate || '').getTime() - 
-        new Date(a.processingDate || '').getTime()
-      );
-  }, [orders, searchTerm, filterDate]);
+      if (!matchesSearch) return false;
 
-  const toggleExpand = (orderId: string) => {
-    setExpandedOrders(prev => {
-      const next = new Set(prev);
-      if (next.has(orderId)) {
-        next.delete(orderId);
-      } else {
-        next.add(orderId);
+      // Date filter
+      const orderDate = new Date(order.processing_date);
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const monthAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+      switch (dateFilter) {
+        case 'today':
+          return orderDate >= today;
+        case 'week':
+          return orderDate >= weekAgo;
+        case 'month':
+          return orderDate >= monthAgo;
+        default:
+          return true;
       }
-      return next;
+    });
+    console.log('CompletedOrders - Filtered orders:', filtered);
+    return filtered;
+  }, [items, searchTerm, dateFilter]);
+
+  // Group orders by tracking number
+  const groupedOrders = useMemo(() => {
+    console.log('CompletedOrders - Grouping filtered orders:', filteredOrders);
+    const groups: Record<string, GroupedOrder> = {};
+
+    filteredOrders.forEach(order => {
+      // If no tracking numbers, create a group with "No Tracking"
+      if (!order.tracking_numbers?.length) {
+        const noTrackingKey = 'no-tracking-' + order.id;
+        if (!groups[noTrackingKey]) {
+          groups[noTrackingKey] = {
+            id: order.id,
+            trackingNumber: 'No Tracking Number',
+            carrier: order.carriers?.[0] || 'Unknown',
+            items: [],
+            isExpanded: expandedGroups[noTrackingKey] || false,
+          };
+        }
+        groups[noTrackingKey].items.push(order);
+        return;
+      }
+
+      // Handle orders with tracking numbers
+      order.tracking_numbers.forEach((trackingNumber, index) => {
+        if (!groups[trackingNumber]) {
+          groups[trackingNumber] = {
+            id: order.id,
+            trackingNumber,
+            carrier: order.carriers?.[index] || 'Unknown',
+            items: [],
+            isExpanded: expandedGroups[trackingNumber] || false,
+          };
+        }
+        groups[trackingNumber].items.push(order);
+      });
+    });
+
+    const result = Object.values(groups).sort((a, b) => {
+      const dateA = new Date(a.items[0].processing_date);
+      const dateB = new Date(b.items[0].processing_date);
+      return dateB.getTime() - dateA.getTime();
+    });
+    console.log('CompletedOrders - Grouped orders:', result);
+    return result;
+  }, [filteredOrders, expandedGroups]);
+
+  const toggleExpand = (trackingNumber: string) => {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [trackingNumber]: !prev[trackingNumber],
+    }));
+  };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
     });
   };
 
-  const formatDate = (dateString: string | undefined) => {
-    if (!dateString) return '-';
-    try {
-      return format(parseISO(dateString), 'MMM d, yyyy h:mm a');
-    } catch {
-      return dateString;
-    }
-  };
+  // If no items are provided, show a message
+  if (!items || items.length === 0) {
+    console.log('CompletedOrders - No items provided');
+    return (
+      <div className="text-center py-8 text-gray-500">
+        No completed orders found
+      </div>
+    );
+  }
 
   return (
-    <div className="bg-white rounded-lg shadow-sm">
-      <div className="p-4 bg-gray-50 border-b border-gray-200">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between space-y-4 sm:space-y-0">
-          <h3 className="text-lg font-medium text-gray-900">Completed Orders</h3>
-          
-          <div className="flex items-center space-x-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search orders..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 pr-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div className="flex items-center space-x-2">
-              <Filter className="h-4 w-4 text-gray-400" />
-              <select
-                value={filterDate}
-                onChange={(e) => setFilterDate(e.target.value as 'all' | 'today')}
-                className="border rounded-md py-2 pl-3 pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="today">Today</option>
-                <option value="all">All Time</option>
-              </select>
-            </div>
-          </div>
+    <div className="space-y-4">
+      {/* Filters */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center space-x-4">
+          <input
+            type="text"
+            placeholder="Search by Order ID or SKU"
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            className="px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <select
+            value={dateFilter}
+            onChange={e => setDateFilter(e.target.value as 'today' | 'week' | 'month' | 'all')}
+            className="px-4 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">Last 7 Days</option>
+            <option value="month">Last 30 Days</option>
+          </select>
+        </div>
+        <div className="text-sm text-gray-500">
+          {filteredOrders.length} orders found
         </div>
       </div>
 
-      <div className="divide-y divide-gray-200">
-        {completedOrders.map((order) => {
-          // Generate a unique key using order properties
-          const orderKey = `${order.id || ''}-${order.orderId}-${order.sku}`;
-          
-          return (
-            <div key={orderKey} className="divide-y divide-gray-100">
-              <div 
-                className="p-4 hover:bg-gray-50 cursor-pointer"
-                onClick={() => toggleExpand(order.orderId)}
+      {/* Orders */}
+      {groupedOrders.map(group => (
+        <div
+          key={group.trackingNumber}
+          className="border rounded-lg overflow-hidden bg-white"
+        >
+          {/* Header */}
+          <div
+            className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
+            onClick={() => toggleExpand(group.trackingNumber)}
+          >
+            <div className="flex items-center space-x-4">
+              <div className="flex-1">
+                <h3 className="text-lg font-medium">{group.trackingNumber}</h3>
+                <p className="text-sm text-gray-500">
+                  {group.carrier} • {group.items.length} items
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center space-x-4">
+              <span className="text-sm text-green-600">Completed</span>
+              <svg
+                className={`w-5 h-5 transform transition-transform ${
+                  group.isExpanded ? 'rotate-180' : ''
+                }`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center space-x-2">
-                      <span className="font-medium text-gray-900">{order.orderId}</span>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">
-                        Completed
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
+            </div>
+          </div>
+
+          {/* Expanded content */}
+          {group.isExpanded && (
+            <div className="border-t">
+              {group.items.map(order => (
+                <div
+                  key={order.id}
+                  className="p-4 border-b last:border-b-0"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium">Order #{order.order_id}</p>
+                      <p className="text-sm text-gray-500">
+                        SKU: {order.item?.sku} • FNSKU: {order.item?.fnsku}
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        Completed: {formatDate(order.processing_date)}
+                      </p>
+                    </div>
+                    <div className="text-sm">
+                      <span className={`${
+                        order.processing_status === 'completed'
+                          ? 'text-green-600'
+                          : 'text-red-600'
+                      }`}>
+                        {order.processing_status === 'completed' ? 'Completed' : 'Cancelled'}
                       </span>
                     </div>
-                    <p className="mt-1 text-sm text-gray-500">
-                      Processed: {formatDate(order.processingDate)}
-                    </p>
                   </div>
-                  <div className="ml-4">
-                    {expandedOrders.has(order.orderId) ? (
-                      <ChevronUp className="w-5 h-5 text-gray-400" />
-                    ) : (
-                      <ChevronDown className="w-5 h-5 text-gray-400" />
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {expandedOrders.has(order.orderId) && (
-                <div className="bg-gray-50 px-4 py-3">
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <p className="text-sm font-medium text-gray-500">SKU</p>
-                        <p className="mt-1">{order.sku}</p>
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-500">Quantity</p>
-                        <p className="mt-1">{order.actualReturnQty} / {order.requestedQuantity}</p>
-                      </div>
+                  {order.notes && (
+                    <div className="mt-2">
+                      <p className="text-sm text-gray-500 whitespace-pre-wrap">
+                        {order.notes}
+                      </p>
                     </div>
-
-                    {order.trackingNumbers && order.trackingNumbers.length > 0 && (
-                      <div>
-                        <p className="text-sm font-medium text-gray-500 mb-2">Shipments</p>
-                        <div className="space-y-2">
-                          {order.trackingNumbers.map((tracking, index) => (
-                            <div 
-                              key={`${orderKey}-tracking-${index}`}
-                              className="flex items-center space-x-2 text-sm"
-                            >
-                              <span className="font-medium">{order.carriers?.[index]}:</span>
-                              <span>{tracking}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {order.notes && order.notes.length > 0 && (
-                      <div>
-                        <p className="text-sm font-medium text-gray-500 mb-2">Notes</p>
-                        <div className="space-y-1">
-                          {order.notes.map((note, index) => (
-                            <p 
-                              key={`${orderKey}-note-${index}`}
-                              className="text-sm text-gray-600"
-                            >
-                              {note}
-                            </p>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
+              ))}
             </div>
-          );
-        })}
+          )}
+        </div>
+      ))}
 
-        {completedOrders.length === 0 && (
-          <div className="p-8 text-center text-gray-500">
-            No completed orders found
-          </div>
-        )}
-      </div>
+      {groupedOrders.length === 0 && (
+        <div className="text-center py-8 text-gray-500">
+          No completed orders found
+        </div>
+      )}
     </div>
   );
 }

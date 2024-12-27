@@ -7,16 +7,21 @@ import {
   PencilLine, 
   Building2,
   Check,
-  X 
+  X,
+  AlertCircle
 } from 'lucide-react';
 
 export default function UserManagement() {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [editingUser, setEditingUser] = useState<string | null>(null);
-  const [newUser, setNewUser] = useState({
+  const [newUser, setNewUser] = useState<{
+    email: string;
+    role: 'admin' | 'manager' | 'employee';
+  }>({
     email: '',
-    role: 'employee' as const
+    role: 'employee'
   });
 
   useEffect(() => {
@@ -34,6 +39,7 @@ export default function UserManagement() {
       setUsers(data || []);
     } catch (error) {
       console.error('Error fetching users:', error);
+      setError('Failed to fetch users: ' + (error instanceof Error ? error.message : 'Unknown error occurred'));
     } finally {
       setLoading(false);
     }
@@ -42,6 +48,7 @@ export default function UserManagement() {
   const handleAddUser = async () => {
     try {
       setLoading(true);
+      setError(null);
       
       // Check if user exists
       const { data: existingUser, error: userError } = await supabase
@@ -55,20 +62,17 @@ export default function UserManagement() {
       }
 
       if (existingUser) {
-        alert('User already exists');
+        setError('User with this email already exists');
         return;
       }
 
       // Create auth user with random password
       const tempPassword = Math.random().toString(36).slice(-8);
-      const { data: authData, error: authError } = await supabase.auth.signUp({
+      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
         email: newUser.email,
         password: tempPassword,
-        options: {
-          data: {
-            role: newUser.role
-          }
-        }
+        email_confirm: true,
+        user_metadata: { role: newUser.role }
       });
 
       if (authError) throw authError;
@@ -83,18 +87,22 @@ export default function UserManagement() {
             role: newUser.role,
             permissions: getDefaultPermissions(newUser.role),
             store_ids: [],
-            managed_stores: []
+            managed_stores: [],
+            created_by: authData.user.id,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
           });
 
         if (profileError) throw profileError;
 
+        setError(null);
         alert(`User created! Temporary password: ${tempPassword}`);
         setNewUser({ email: '', role: 'employee' });
         await fetchUsers();
       }
     } catch (error) {
       console.error('Error adding user:', error);
-      alert('Failed to add user');
+      setError('Failed to add user: ' + (error instanceof Error ? error.message : 'Unknown error occurred'));
     } finally {
       setLoading(false);
     }
@@ -103,6 +111,7 @@ export default function UserManagement() {
   const handleUpdateRole = async (userId: string, newRole: 'admin' | 'manager' | 'employee') => {
     try {
       setLoading(true);
+      setError(null);
       const { error } = await supabase
         .from('user_profiles')
         .update({ 
@@ -115,7 +124,7 @@ export default function UserManagement() {
       await fetchUsers();
     } catch (error) {
       console.error('Error updating role:', error);
-      alert('Failed to update role');
+      setError('Failed to update role: ' + (error instanceof Error ? error.message : 'Unknown error occurred'));
     } finally {
       setLoading(false);
     }
@@ -126,12 +135,13 @@ export default function UserManagement() {
 
     try {
       setLoading(true);
+      setError(null);
       const { error } = await supabase.auth.admin.deleteUser(userId);
       if (error) throw error;
       await fetchUsers();
     } catch (error) {
       console.error('Error deleting user:', error);
-      alert('Failed to delete user');
+      setError('Failed to delete user: ' + (error instanceof Error ? error.message : 'Unknown error occurred'));
     } finally {
       setLoading(false);
     }
@@ -139,6 +149,17 @@ export default function UserManagement() {
 
   return (
     <div className="p-6">
+      {error && (
+        <div className="mb-6 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm flex items-center justify-between">
+          <span className="flex items-center">
+            <AlertCircle className="w-4 h-4 mr-2" />
+            {error}
+          </span>
+          <button onClick={() => setError(null)} className="text-red-500 hover:text-red-700">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
       <div className="mb-6">
         <h2 className="text-lg font-medium text-gray-900">Add New User</h2>
         <div className="mt-3 flex gap-4">
@@ -260,24 +281,24 @@ function getDefaultPermissions(role: string) {
   switch (role) {
     case 'admin':
       return {
-        manage_users: true,
-        manage_stores: true,
-        view_all_stores: true,
-        edit_all_stores: true
+        manageUsers: true,
+        manageStores: true,
+        viewAllStores: true,
+        editAllStores: true
       };
     case 'manager':
       return {
-        manage_users: false,
-        manage_stores: false,
-        view_all_stores: false,
-        edit_all_stores: false
+        manageUsers: false,
+        manageStores: false,
+        viewAllStores: false,
+        editAllStores: false
       };
     default:
       return {
-        manage_users: false,
-        manage_stores: false,
-        view_all_stores: false,
-        edit_all_stores: false
+        manageUsers: false,
+        manageStores: false,
+        viewAllStores: false,
+        editAllStores: false
       };
   }
 }

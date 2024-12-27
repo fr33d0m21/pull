@@ -1,183 +1,159 @@
-import { useMemo, useState } from 'react';
-import { Clock, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react';
-import { RemovalOrder } from '../../types';
-import { format, parseISO, isToday } from 'date-fns';
-import { generateUniqueId } from '../../utils/uniqueKey';
-
-interface WorkQueueProps {
-  orders: RemovalOrder[];
-  onOrderSelect: (orderId: string) => void;
-  selectedOrderId: string | null;
-}
+import React, { useState, useMemo } from 'react';
+import { WorkingItem } from '../../types';
 
 interface GroupedOrder {
-  uniqueId: string;
+  id: string;
   trackingNumber: string;
   carrier: string;
-  requestDate: string;
-  status: string;
-  items: {
-    sku: string;
-    orderId: string;
-    expectedQuantity: number;
-    actualQuantity: number;
-    disposition: string;
-  }[];
+  items: WorkingItem[];
+  isExpanded: boolean;
   isUrgent: boolean;
-  hasMismatch: boolean;
+  isComplete: boolean;
 }
 
-export default function WorkQueue({ orders, onOrderSelect, selectedOrderId }: WorkQueueProps) {
-  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
+interface WorkQueueProps {
+  items: WorkingItem[];
+  onOrderSelect: (orderId: string) => void;
+  selectedOrderId?: string;
+}
 
+export default function WorkQueue({ items, onOrderSelect, selectedOrderId }: WorkQueueProps) {
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+
+  // Group orders by tracking number
   const groupedOrders = useMemo(() => {
-    const grouped = orders.reduce((acc, order) => {
-        const key = order.trackingNumber;
-        if (!key || !order.shippedQuantity) return acc;
-        
-        // Get all orders with this tracking number to check completion status
-        const relatedOrders = orders.filter(o => o.trackingNumber === key);
-        const isGroupCompleted = relatedOrders.every(o => o.processingStatus === 'completed');
-        
-        // Skip if the entire group is completed
-        if (isGroupCompleted) return acc;
+    const groups: Record<string, GroupedOrder> = {};
 
-        if (!acc[key]) {
-          const uniqueId = generateUniqueId();
-          acc[key] = {
-            uniqueId,
-            trackingNumber: key,
-            carrier: order.carrier || '',
-            requestDate: order.requestDate,
-            status: 'processing',
-            items: [],
-            isUrgent: order.orderSource === 'Seller-initiated Manual Removal' && !order.requestedBy,
-            hasMismatch: false
-          };
-        }
+    items.forEach(item => {
+      const trackingNumber = item.tracking_number;
+      if (!trackingNumber) return;
 
-        // Add item to group
-        acc[key].items.push({
-          sku: order.sku,
-          orderId: order.orderId,
-          expectedQuantity: order.shippedQuantity,
-          actualQuantity: order.actualReturnQty || 0,
-          disposition: order.disposition || ''
-        });
-
-        // Check for quantity mismatches
-        if (order.shippedQuantity !== (order.actualReturnQty || 0)) {
-          acc[key].hasMismatch = true;
-        }
-
-        return acc;
-    }, {} as Record<string, GroupedOrder>);
-
-    return Object.values(grouped).sort((a, b) => {
-      // Sort by urgency first
-      if (a.isUrgent !== b.isUrgent) {
-        return a.isUrgent ? -1 : 1;
+      if (!groups[trackingNumber]) {
+        groups[trackingNumber] = {
+          id: item.id,
+          trackingNumber,
+          carrier: item.carrier,
+          items: [],
+          isExpanded: expandedGroups[trackingNumber] || false,
+          isUrgent: false, // TODO: Implement urgency logic
+          isComplete: false,
+        };
       }
-      // Then by date
-      return new Date(b.requestDate).getTime() - new Date(a.requestDate).getTime();
-    });
-  }, [orders]);
 
-  const toggleExpand = (orderId: string) => {
-    setExpandedOrders(prev => {
-      const next = new Set(prev);
-      if (next.has(orderId)) {
-        next.delete(orderId);
-      } else {
-        next.add(orderId);
-      }
-      return next;
+      groups[trackingNumber].items.push(item);
+
+      // Update completion status
+      groups[trackingNumber].isComplete = groups[trackingNumber].items.every(
+        i => i.processing_status === 'completed'
+      );
     });
+
+    // Sort by urgency and completion status
+    return Object.values(groups).sort((a, b) => {
+      if (a.isComplete !== b.isComplete) return a.isComplete ? 1 : -1;
+      if (a.isUrgent !== b.isUrgent) return b.isUrgent ? 1 : -1;
+      return 0;
+    });
+  }, [items, expandedGroups]);
+
+  const toggleExpand = (trackingNumber: string) => {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [trackingNumber]: !prev[trackingNumber],
+    }));
   };
 
-  if (groupedOrders.length === 0) {
-    return (
-      <div className="bg-white rounded-lg shadow p-4">
-        <h2 className="text-lg font-semibold mb-4">Work Queue</h2>
-        <p className="text-gray-500 text-center">No orders in queue</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="bg-white rounded-lg shadow">
-      <div className="p-4 border-b">
-        <h2 className="text-lg font-semibold">Work Queue</h2>
-      </div>
-      <div className="divide-y">
-        {groupedOrders.map((group) => (
-          <div 
-            key={group.uniqueId}
-            className={`p-4 ${group.isUrgent ? 'bg-red-50' : ''}`}
+    <div className="space-y-4">
+      {groupedOrders.map(group => (
+        <div
+          key={group.trackingNumber}
+          className={`border rounded-lg overflow-hidden ${
+            group.isComplete ? 'bg-gray-50' : 'bg-white'
+          }`}
+        >
+          {/* Header */}
+          <div
+            className={`p-4 flex items-center justify-between cursor-pointer ${
+              group.isUrgent ? 'bg-red-50' : ''
+            }`}
+            onClick={() => toggleExpand(group.trackingNumber)}
           >
-            {/* Header */}
-            <div 
-              className="flex items-center justify-between cursor-pointer"
-              onClick={() => toggleExpand(group.uniqueId)}
-            >
-              <div className="flex items-center space-x-4">
-                <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-4">
+              <div className="flex-1">
+                <h3 className="text-lg font-medium">
+                  {group.trackingNumber}
                   {group.isUrgent && (
-                    <AlertTriangle className="h-5 w-5 text-red-500" />
+                    <span className="ml-2 text-sm text-red-600">URGENT</span>
                   )}
-                  {!isToday(parseISO(group.requestDate)) && (
-                    <Clock className="h-5 w-5 text-yellow-500" />
-                  )}
-                </div>
-                <div>
-                  <div className="font-medium">{group.trackingNumber}</div>
-                  <div className="text-sm text-gray-500">
-                    {group.carrier} • {format(parseISO(group.requestDate), 'MMM d, yyyy')}
-                  </div>
-                </div>
+                </h3>
+                <p className="text-sm text-gray-500">
+                  {group.carrier} • {group.items.length} items
+                </p>
               </div>
-              {expandedOrders.has(group.uniqueId) ? (
-                <ChevronUp className="h-5 w-5 text-gray-400" />
-              ) : (
-                <ChevronDown className="h-5 w-5 text-gray-400" />
-              )}
             </div>
+            <div className="flex items-center space-x-4">
+              {group.isComplete ? (
+                <span className="text-sm text-green-600">Completed</span>
+              ) : (
+                <span className="text-sm text-blue-600">Processing</span>
+              )}
+              <svg
+                className={`w-5 h-5 transform transition-transform ${
+                  group.isExpanded ? 'rotate-180' : ''
+                }`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
+            </div>
+          </div>
 
-            {/* Expanded Content */}
-            {expandedOrders.has(group.uniqueId) && (
-              <div className="mt-4 space-y-3">
-                {group.items.map((item) => (
-                  <div 
-                    key={item.orderId}
-                    className={`p-3 rounded-lg border ${
-                      selectedOrderId === item.orderId ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200'
-                    } hover:border-indigo-500 cursor-pointer`}
-                    onClick={() => onOrderSelect(item.orderId)}
-                  >
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <div className="font-medium">{item.sku}</div>
-                        <div className="text-sm text-gray-500">Order: {item.orderId}</div>
-                        <div className="text-sm text-gray-500">
-                          {item.disposition || 'No disposition'}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className={`font-medium ${
-                          item.expectedQuantity !== item.actualQuantity ? 'text-red-600' : ''
-                        }`}>
-                          {item.actualQuantity} / {item.expectedQuantity}
-                        </div>
-                        <div className="text-sm text-gray-500">units received</div>
-                      </div>
+          {/* Expanded content */}
+          {group.isExpanded && (
+            <div className="border-t">
+              {group.items.map(item => (
+                <div
+                  key={item.id}
+                  className={`p-4 border-b last:border-b-0 cursor-pointer hover:bg-gray-50 ${
+                    selectedOrderId === item.order_id ? 'bg-blue-50' : ''
+                  }`}
+                  onClick={() => onOrderSelect(item.order_id)}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium">Order #{item.order_id}</p>
+                      <p className="text-sm text-gray-500">
+                        SKU: {item.item?.sku} • FNSKU: {item.item?.fnsku}
+                      </p>
+                    </div>
+                    <div className="text-sm">
+                      {item.processing_status === 'completed' ? (
+                        <span className="text-green-600">Completed</span>
+                      ) : (
+                        <span className="text-blue-600">Processing</span>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+
+      {groupedOrders.length === 0 && (
+        <div className="text-center py-8 text-gray-500">
+          No orders in the queue
+        </div>
+      )}
     </div>
   );
 }

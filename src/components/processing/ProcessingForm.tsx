@@ -1,169 +1,228 @@
-import { useState } from 'react';
-import { RemovalOrder, OrderItem } from '../../types';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useData } from '../../context/DataContext';
-import { generateUniqueId } from '../../utils/uniqueKey';
-import { Plus } from 'lucide-react';
-import ReceivedUnit from './ReceivedUnit';
+import { WorkingItem } from '../../types';
 
 interface ProcessingFormProps {
-  order: RemovalOrder;
-  onProcessingComplete: () => void;
+  item: WorkingItem;
+  onComplete: () => void;
 }
 
-export default function ProcessingForm({ order, onProcessingComplete }: ProcessingFormProps) {
-  const { processOrder } = useData();
-  const [items, setItems] = useState<OrderItem[]>([]);
-  
-  // Calculate quantities
-  const expectedQuantity = order.shippedQuantity || 0;
-  const totalReceived = items.reduce((sum, item) => sum + (item.receivedQuantity || 0), 0);
-  const remaining = expectedQuantity - items.length;
+interface ProcessedItem {
+  quantity: number;
+  condition: 'Sellable' | 'Unsellable' | 'Missing';
+  notes: string;
+}
 
-  // Initialize with shipped quantity from order
-  function createInitialItem(): OrderItem {
-    return {
-      id: generateUniqueId(),
-      sku: order.sku || '',
-      fnsku: order.fnsku || '',
-      expectedQuantity: 1, // Each item represents 1 unit
-      receivedQuantity: 1,
-      condition: '',
-      notes: ''
-    };
+export default function ProcessingForm({ item, onComplete }: ProcessingFormProps) {
+  const { processOrder } = useData();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processedItems, setProcessedItems] = useState<ProcessedItem[]>([]);
+
+  // Initialize processed items
+  useEffect(() => {
+    if (item?.item) {
+      setProcessedItems([
+        {
+          quantity: 0,
+          condition: 'Sellable',
+          notes: '',
+        },
+      ]);
+    }
+  }, [item]);
+
+  const handleQuantityChange = useCallback((index: number, value: number) => {
+    setProcessedItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], quantity: value };
+      return next;
+    });
+  }, []);
+
+  const handleConditionChange = useCallback((index: number, value: 'Sellable' | 'Unsellable' | 'Missing') => {
+    setProcessedItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], condition: value };
+      return next;
+    });
+  }, []);
+
+  const handleNotesChange = useCallback((index: number, value: string) => {
+    setProcessedItems(prev => {
+      const next = [...prev];
+      next[index] = { ...next[index], notes: value };
+      return next;
+    });
+  }, []);
+
+  const handleAddItem = useCallback(() => {
+    setProcessedItems(prev => [
+      ...prev,
+      {
+        quantity: 0,
+        condition: 'Sellable',
+        notes: '',
+      },
+    ]);
+  }, []);
+
+  const handleRemoveItem = useCallback((index: number) => {
+    setProcessedItems(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleComplete = useCallback(async () => {
+    if (!item) return;
+
+    setIsProcessing(true);
+    try {
+      // Calculate total quantity
+      const totalQuantity = processedItems.reduce((sum, item) => sum + item.quantity, 0);
+
+      // Update working item
+      await processOrder(item.id, {
+        processing_status: 'completed',
+        actual_return_qty: totalQuantity,
+        notes: processedItems.map(item => 
+          `${item.quantity} ${item.condition}${item.notes ? `: ${item.notes}` : ''}`
+        ).join('\n'),
+      });
+
+      onComplete();
+    } catch (error) {
+      console.error('Error completing order:', error);
+      alert('Error completing order. Please try again.');
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [item, processedItems, processOrder, onComplete]);
+
+  if (!item?.item) {
+    return <div>Order not found</div>;
   }
 
-  const handleConditionChange = (index: number, condition: OrderItem['condition']) => {
-    const updatedItems = [...items];
-    updatedItems[index] = {
-      ...updatedItems[index],
-      condition
-    };
-    setItems(updatedItems);
-
-    processOrder(order.orderId, {
-      ...order,
-      items: updatedItems,
-      actualReturnQty: updatedItems.reduce((sum, item) => sum + (item.receivedQuantity || 0), 0)
-    });
-  };
-
-  const handleItemChange = (index: number, updatedItem: OrderItem) => {
-    const updatedItems = [...items];
-    updatedItems[index] = updatedItem;
-    
-    // Update receivedQuantity based on condition
-    updatedItems[index].receivedQuantity = updatedItem.condition === 'Missing' ? 0 : 1;
-    
-    setItems(updatedItems);
-
-    processOrder(order.orderId, {
-      ...order,
-      items: updatedItems,
-      actualReturnQty: updatedItems.filter(item => item.condition !== 'Missing').length
-    });
-  };
-
-  const handleAddItem = () => {
-    const remaining = expectedQuantity - items.length;
-    
-    if (remaining <= 0) {
-      alert('All expected units have been accounted for.');
-      return;
-    }
-
-    const newItem = createInitialItem();
-    setItems([...items, newItem]);
-
-    processOrder(order.orderId, {
-      ...order,
-      items: [...items, newItem],
-      actualReturnQty: items.length + 1,
-      processingStatus: 'processing'
-    });
-  };
-
-  const handleRemoveItem = (index: number) => {
-    const updatedItems = items.filter((_, i) => i !== index);
-    setItems(updatedItems);
-    const actualReceived = updatedItems.filter(item => item.condition !== 'Missing').length;
-
-    processOrder(order.orderId, {
-      ...order,
-      items: updatedItems,
-      actualReturnQty: updatedItems.length
-    });
-  };
-
-  const handleComplete = () => {
-    if (!items.every(item => item.condition)) {
-      alert('Please ensure all items have a condition set.');
-      return;
-    }
-    
-    if (items.length !== expectedQuantity) {
-      alert(`Please process all ${expectedQuantity} expected units. Currently processed: ${totalReceived}`);
-      return;
-    }
-
-    // Mark this SKU as completed
-    processOrder(order.orderId, {
-      ...order,
-      items,
-      actualReturnQty: items.length,
-      processingStatus: 'completed',
-      processingDate: new Date().toISOString()
-    });
-
-    onProcessingComplete();
-  };
-
+  const totalProcessed = processedItems.reduce((sum, item) => sum + item.quantity, 0);
+  const expectedQuantity = item.item.requested_quantity;
+  const isComplete = totalProcessed === expectedQuantity;
 
   return (
-    <div className="bg-white rounded-lg shadow-sm">
-      <div className="p-4 border-b border-gray-200">
-        <h3 className="text-lg font-medium text-gray-900">Process Items</h3>
-        <p className="mt-1 text-sm text-gray-500">
-          Expected Units: {expectedQuantity} | Processed: {totalReceived} | Remaining: {remaining}
-        </p>
+    <div className="space-y-6">
+      {/* Order details */}
+      <div>
+        <h3 className="text-lg font-medium">Order Details</h3>
+        <div className="mt-2 grid grid-cols-2 gap-4">
+          <div>
+            <p className="text-sm text-gray-500">Order ID</p>
+            <p className="font-medium">{item.order_id}</p>
+          </div>
+          <div>
+            <p className="text-sm text-gray-500">SKU</p>
+            <p className="font-medium">{item.item.sku}</p>
+          </div>
+          <div>
+            <p className="text-sm text-gray-500">FNSKU</p>
+            <p className="font-medium">{item.item.fnsku}</p>
+          </div>
+          <div>
+            <p className="text-sm text-gray-500">Expected Quantity</p>
+            <p className="font-medium">{expectedQuantity}</p>
+          </div>
+        </div>
       </div>
 
-      <div className="p-4 space-y-6">
-        {/* Items */}
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <h4 className="text-sm font-medium text-gray-900">Received Units</h4>
-            <button
-              type="button"
-              onClick={handleAddItem}
-              disabled={remaining <= 0}
-              className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Add Unit
-            </button>
-          </div>
+      {/* Processed items */}
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-medium">Processed Items</h3>
+          <button
+            type="button"
+            onClick={handleAddItem}
+            className="text-blue-600 hover:text-blue-800"
+          >
+            + Add Item
+          </button>
+        </div>
 
-          {items.map((item, index) => (
-            <ReceivedUnit
-              key={item.id}
-              unit={item}
-              onRemove={() => handleRemoveItem(index)}
-              onChange={(updatedItem) => handleItemChange(index, updatedItem)}
-            />
+        <div className="space-y-4">
+          {processedItems.map((processedItem, index) => (
+            <div key={index} className="flex items-start space-x-4 p-4 bg-gray-50 rounded-lg">
+              <div className="flex-1 grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Quantity
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={processedItem.quantity}
+                    onChange={e => handleQuantityChange(index, parseInt(e.target.value) || 0)}
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Condition
+                  </label>
+                  <select
+                    value={processedItem.condition}
+                    onChange={e => handleConditionChange(index, e.target.value as 'Sellable' | 'Unsellable' | 'Missing')}
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  >
+                    <option value="Sellable">Sellable</option>
+                    <option value="Unsellable">Unsellable</option>
+                    <option value="Missing">Missing</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Notes
+                  </label>
+                  <input
+                    type="text"
+                    value={processedItem.notes}
+                    onChange={e => handleNotesChange(index, e.target.value)}
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+              {processedItems.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => handleRemoveItem(index)}
+                  className="text-red-600 hover:text-red-800"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
           ))}
         </div>
 
-        {/* Action Buttons */}
-        <div className="flex justify-end space-x-4 border-t pt-4">
-          <button
-            type="button"
-            onClick={() => handleComplete()}
-            disabled={items.length === 0 || !items.every(item => item.condition) || items.length !== expectedQuantity}
-            className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Complete Processing
-          </button>
+        <div className="mt-4 flex items-center justify-between text-sm">
+          <span>
+            Total Processed: {totalProcessed} / {expectedQuantity}
+          </span>
+          {!isComplete && (
+            <span className="text-yellow-600">
+              {expectedQuantity - totalProcessed} remaining
+            </span>
+          )}
         </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex justify-end space-x-4">
+        <button
+          type="button"
+          disabled={isProcessing || !isComplete}
+          onClick={handleComplete}
+          className={`px-4 py-2 rounded-md text-white ${
+            isProcessing || !isComplete
+              ? 'bg-gray-400 cursor-not-allowed'
+              : 'bg-blue-600 hover:bg-blue-700'
+          }`}
+        >
+          {isProcessing ? 'Processing...' : 'Complete Order'}
+        </button>
       </div>
     </div>
   );

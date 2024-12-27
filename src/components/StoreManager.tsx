@@ -80,18 +80,27 @@ export default function StoreManager() {
       await removeStore(store.id);
     } catch (err) {
       console.error('Error deleting store:', err);
-      setError('Failed to delete store. Please try again.');
+      setError('Failed to delete store: ' + (err instanceof Error ? err.message : 'Unknown error occurred'));
     } finally {
       setLoading(false);
     }
   };
 
-  if (!profile?.role || (profile.role !== 'admin' && !profile.permissions?.manage_stores)) {
+  if (!profile?.role || (profile.role !== 'admin' && !profile.permissions?.manageStores)) {
     return null;
   }
 
   return (
     <div className="relative">
+      {error && !isOpen && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md text-red-700 text-sm flex items-center justify-between">
+          <span>{error}</span>
+          <button onClick={() => setError('')} className="text-red-500 hover:text-red-700">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      
       <button
         onClick={() => setIsOpen(!isOpen)}
         className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
@@ -124,8 +133,11 @@ export default function StoreManager() {
                     </div>
 
                     {error && (
-                      <div className="mt-4 p-2 bg-red-50 text-red-700 text-sm rounded">
-                        {error}
+                      <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-md flex items-center justify-between">
+                        <span>{error}</span>
+                        <button onClick={() => setError('')} className="text-red-500 hover:text-red-700">
+                          <X className="w-4 h-4" />
+                        </button>
                       </div>
                     )}
 

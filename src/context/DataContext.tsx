@@ -1,368 +1,304 @@
-import { createContext, useContext, useState, useCallback, useEffect } from 'react';
-import type { DataContext as DataContextType, RemovalOrder, DashboardStats, TrackingEntry } from '../types';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 import { useStore } from './StoreContext';
-import { generateUniqueId } from '../utils/uniqueKey';
 import { supabase } from '../lib/supabase';
+import type { DataContext as DataContextType, DashboardItem, WorkingItem, CompletedOrder, DashboardStats } from '../types';
+import type { Database } from '../types/supabase';
 
-const calculateStats = (orders: RemovalOrder[]): DashboardStats => {
-  return {
-    totalOrders: orders.length,
-    pendingOrders: orders.filter(o => o.orderStatus === 'Pending').length,
-    completedOrders: orders.filter(o => o.orderStatus === 'Completed').length,
-    cancelledOrders: orders.filter(o => o.orderStatus === 'Cancelled').length,
-    totalItems: orders.reduce((sum, order) => sum + order.requestedQuantity, 0),
-    receivedItems: orders.reduce((sum, order) => sum + order.actualReturnQty, 0),
-  };
-};
-
-const DataContext = createContext<DataContextType | null>(null);
+const DataContext = createContext<DataContextType | undefined>(undefined);
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
   const { currentStore } = useStore();
-  const [ordersByStore, setOrdersByStore] = useState<Record<string, RemovalOrder[]>>({});
-  const [statsByStore, setStatsByStore] = useState<Record<string, DashboardStats>>({});
-  const [currentSpreadsheet, setCurrentSpreadsheet] = useState<string | null>(null);
-  const [trackingEntriesByStore, setTrackingEntriesByStore] = useState<Record<string, TrackingEntry[]>>({});
-  const [currentTrackingSpreadsheet, setCurrentTrackingSpreadsheet] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [dashboardItems, setDashboardItems] = useState<DashboardItem[]>([]);
+  const [workingItems, setWorkingItems] = useState<WorkingItem[]>([]);
+  const [completedOrders, setCompletedOrders] = useState<CompletedOrder[]>([]);
+  const [stats, setStats] = useState<DashboardStats>({
+    totalOrders: 0,
+    pendingOrders: 0,
+    completedOrders: 0,
+    cancelledOrders: 0,
+    totalItems: 0,
+    receivedItems: 0,
+  });
 
-  const currentOrders = currentStore ? ordersByStore[currentStore.id] || [] : [];
-  const currentStats = currentStore ? statsByStore[currentStore.id] || calculateStats([]) : calculateStats([]);
-  const currentTrackingEntries = currentStore ? trackingEntriesByStore[currentStore.id] || [] : [];
-
-  // Fetch data from database when store changes
-  useEffect(() => {
+  // Load store data
+  const loadStoreData = useCallback(async () => {
     if (!currentStore) return;
 
-    const fetchData = async () => {
-      setIsLoading(true);
+    setIsLoading(true);
+    try {
+      // Load pullback items first
+      const { data: pullbackItems, error: pullbackError } = await supabase
+        .from('pullback_items')
+        .select('*')
+        .eq('store_id', currentStore.id)
+        .order('created_at', { ascending: false });
+
+      if (pullbackError) throw pullbackError;
+
+      // Then load related items
+      const itemIds = pullbackItems?.map(item => item.item_id) || [];
+      const { data: items, error: itemsError } = await supabase
+        .from('items')
+        .select('*')
+        .in('id', itemIds);
+
+      if (itemsError) throw itemsError;
+
+      // Combine pullback items with their related items
+      const workingItemsWithData = pullbackItems?.map(pullbackItem => ({
+        ...pullbackItem,
+        item: items?.find(item => item.id === pullbackItem.item_id),
+        actual_return_qty: items?.find(item => item.id === pullbackItem.item_id)?.actual_return_qty || 0
+      })) || [];
+
+      // Filter working items (new or processing status)
+      const working = workingItemsWithData.filter(
+        item => item.processing_status === 'new' || item.processing_status === 'processing'
+      );
+      setWorkingItems(working as WorkingItem[]);
+
+      // Load completed orders
+      console.log('Loading completed orders for store:', currentStore.id);
+      const { data: orders, error: ordersError } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('store_id', currentStore.id)
+        .in('processing_status', ['completed', 'cancelled'])
+        .order('created_at', { ascending: false });
+
+      if (ordersError) {
+        console.error('Error loading orders:', ordersError);
+        throw ordersError;
+      }
+      console.log('Loaded orders:', orders?.length || 0, 'orders');
+      console.log('Orders data:', orders);
+
+      if (!orders || orders.length === 0) {
+        console.log('No completed orders found');
+        setCompletedOrders([]);
+        return;
+      }
+
+      // Load items for completed orders
+      const orderItemIds = orders.map(order => order.item_id);
+      console.log('Loading items for order IDs:', orderItemIds);
+      
+      const { data: orderItems, error: orderItemsError } = await supabase
+        .from('items')
+        .select('*')
+        .in('id', orderItemIds);
+
+      if (orderItemsError) {
+        console.error('Error loading order items:', orderItemsError);
+        throw orderItemsError;
+      }
+      console.log('Loaded items:', orderItems?.length || 0, 'items');
+      console.log('Items data:', orderItems);
+
+      // Combine orders with their items
+      const ordersWithItems = orders.map(order => {
+        const item = orderItems?.find(item => item.id === order.item_id);
+        if (!item) {
+          console.warn('Could not find item for order:', order.id, 'item_id:', order.item_id);
+        }
+        return {
+          ...order,
+          item
+        };
+      });
+
+      console.log('Final combined orders with items:', ordersWithItems);
+      setCompletedOrders(ordersWithItems);
+
+      // Load all items for dashboard
+      const { data: allItems, error: allItemsError } = await supabase
+        .from('items')
+        .select('*')
+        .eq('store_id', currentStore.id)
+        .order('created_at', { ascending: false });
+
+      if (allItemsError) throw allItemsError;
+      setDashboardItems(allItems as DashboardItem[]);
+
+      // Calculate stats
+      const newStats: DashboardStats = {
+        totalOrders: allItems?.length || 0,
+        pendingOrders: allItems?.filter(i => i.status === 'new').length || 0,
+        completedOrders: allItems?.filter(i => i.status === 'completed').length || 0,
+        cancelledOrders: allItems?.filter(i => i.status === 'cancelled').length || 0,
+        totalItems: allItems?.reduce((sum, i) => sum + i.requested_quantity, 0) || 0,
+        receivedItems: allItems?.reduce((sum, i) => sum + i.actual_return_qty, 0) || 0,
+      };
+      setStats(newStats);
+
+    } catch (error) {
+      console.error('Error loading store data:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [currentStore]);
+
+  // Process order
+  const processOrder = useCallback(async (orderId: string, data: Partial<WorkingItem>) => {
+    if (!currentStore) return;
+
+    const maxRetries = 2;
+    let retryCount = 0;
+
+    const tryOperation = async () => {
       try {
-        // Fetch tracking entries
-        const { data: trackingData, error: trackingError } = await supabase
-          .from('tracking_entries')
+        console.log('Processing order:', orderId, 'with data:', data);
+        
+        // Get the pullback item
+        const { data: pullbackItem, error: pullbackError } = await supabase
+          .from('pullback_items')
           .select('*')
-          .eq('store_id', currentStore.id);
+          .eq('id', orderId)
+          .eq('store_id', currentStore.id)
+          .single();
 
-        if (trackingError) throw trackingError;
+        if (pullbackError) {
+          console.error('Pullback query error:', pullbackError);
+          throw pullbackError;
+        }
+        
+        if (!pullbackItem) {
+          throw new Error('Pullback item not found');
+        }
 
-        // Transform tracking data
-        const transformedTrackingEntries = trackingData.map(entry => ({
-          id: entry.id,
-          spreadsheetId: entry.spreadsheet_id,
-          uploadDate: entry.created_at,
-          storeId: entry.store_id,
-          processingStatus: entry.processing_status || 'new',
-          requestDate: entry.request_date,
-          shipmentDate: entry.shipment_date,
-          orderId: entry.order_id,
-          trackingNumber: entry.tracking_number,
-          removalOrderType: entry.removal_order_type,
-          shippedQuantity: entry.shipped_quantity,
-          carrier: entry.carrier
-        }));
+        console.log('Found pullback item:', pullbackItem);
 
-        // Update tracking entries state
-        setTrackingEntriesByStore(prev => ({
-          ...prev,
-          [currentStore.id]: transformedTrackingEntries
-        }));
+        // If completing order, do all updates in parallel
+        if (data.processing_status === 'completed' || data.processing_status === 'cancelled') {
+          console.log('Creating completed order record...');
+          const [updateResult, itemResult, orderResult] = await Promise.all([
+            // Update pullback item
+            supabase
+              .from('pullback_items')
+              .update({
+                processing_status: data.processing_status,
+                tracking_numbers: data.tracking_numbers || [],
+                carriers: data.carriers || [],
+                notes: data.notes,
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', orderId)
+              .eq('store_id', currentStore.id),
 
-        // Fetch removal orders
-        const { data: ordersData, error: ordersError } = await supabase
-          .from('removal_orders')
-          .select('*')
-          .eq('store_id', currentStore.id);
+            // Update item status
+            supabase
+              .from('items')
+              .update({
+                status: data.processing_status,
+                actual_return_qty: data.actual_return_qty,
+                updated_at: new Date().toISOString(),
+              })
+              .eq('id', pullbackItem.item_id),
 
-        if (ordersError) throw ordersError;
+            // Create order record
+            supabase
+              .from('orders')
+              .insert({
+                order_id: pullbackItem.order_id,
+                item_id: pullbackItem.item_id,
+                store_id: currentStore.id,
+                spreadsheet_id: pullbackItem.spreadsheet_id,
+                processing_status: data.processing_status,
+                processing_date: new Date().toISOString(),
+                tracking_numbers: data.tracking_numbers || [],
+                carriers: data.carriers || [],
+                notes: data.notes,
+              })
+          ]);
 
-        // Transform orders data
-        const transformedOrders = ordersData.map(order => ({
-          id: order.id,
-          spreadsheetId: order.spreadsheet_id,
-          uploadDate: order.created_at,
-          storeId: order.store_id,
-          processingStatus: order.processing_status || 'new',
-          requestDate: order.request_date,
-          orderId: order.order_id,
-          removalOrderType: order.removal_order_type,
-          requestedQuantity: order.requested_quantity,
-          actualReturnQty: order.actual_return_qty || 0,
-          trackingNumbers: order.tracking_numbers || [],
-          carriers: order.carriers || [],
-          items: order.items || []
-        }));
+          console.log('Update results:', {
+            pullbackUpdate: updateResult,
+            itemUpdate: itemResult,
+            orderCreate: orderResult
+          });
 
-        // Update orders state
-        setOrdersByStore(prev => {
-          const updatedOrders = {
-            ...prev,
-            [currentStore.id]: transformedOrders
-          };
+          if (updateResult.error) {
+            console.error('Update error:', updateResult.error);
+            throw updateResult.error;
+          }
 
-          // Update stats
-          setStatsByStore(prevStats => ({
-            ...prevStats,
-            [currentStore.id]: calculateStats(transformedOrders),
-          }));
+          if (itemResult.error) {
+            console.error('Item update error:', itemResult.error);
+            throw itemResult.error;
+          }
 
-          return updatedOrders;
-        });
+          if (orderResult.error) {
+            console.error('Order creation error:', orderResult.error);
+            throw orderResult.error;
+          }
 
+          console.log('Successfully completed order processing');
+        } else {
+          // Just update the pullback item
+          console.log('Updating pullback item status...');
+          const { error: updateError } = await supabase
+            .from('pullback_items')
+            .update({
+              processing_status: data.processing_status,
+              tracking_numbers: data.tracking_numbers || [],
+              carriers: data.carriers || [],
+              notes: data.notes,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', orderId)
+            .eq('store_id', currentStore.id);
+
+          if (updateError) {
+            console.error('Update error:', updateError);
+            throw updateError;
+          }
+        }
+
+        // Immediately reload store data
+        console.log('Reloading store data...');
+        await loadStoreData();
       } catch (error) {
-        console.error('Error fetching data:', error);
-      } finally {
-        setIsLoading(false);
+        console.error(`Attempt ${retryCount + 1} failed:`, error);
+        if (retryCount < maxRetries) {
+          retryCount++;
+          // Shorter backoff time
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+          return tryOperation();
+        }
+        throw error;
       }
     };
 
-    fetchData();
-  }, [currentStore]);
+    await tryOperation();
+  }, [currentStore, loadStoreData]);
 
-  const processOrder = useCallback((orderId: string, data: Partial<RemovalOrder>) => {
-    if (!currentStore) return;
+  // Load initial data
+  React.useEffect(() => {
+    if (currentStore) {
+      loadStoreData();
+    }
+  }, [currentStore, loadStoreData]);
 
-    setOrdersByStore(prev => {
-      const orders = prev[currentStore.id] || [];
-      const updatedOrders = orders.map(order => {
-        if (order.orderId === orderId) {
-          // Check if all items are processed
-          const allItemsProcessed = data.items?.every(item => 
-            item.receivedQuantity === item.expectedQuantity
-          );
+  const value = {
+    dashboardItems,
+    workingItems,
+    completedOrders,
+    stats,
+    isLoading,
+    processOrder,
+    loadStoreData,
+  };
 
-          return {
-            ...order,
-            ...data,
-            processingStatus: allItemsProcessed ? 'completed' : 'processing',
-            processingDate: allItemsProcessed ? new Date().toISOString() : order.processingDate,
-            id: order.id
-          };
-        }
-        return order;
-      });
-      
-      setStatsByStore(prevStats => ({
-        ...prevStats,
-        [currentStore.id]: calculateStats(updatedOrders),
-      }));
-
-      return {
-        ...prev,
-        [currentStore.id]: updatedOrders,
-      };
-    });
-  }, [currentStore]);
-
-  const getOrderByOrderId = useCallback((orderId: string): RemovalOrder | null => {
-    if (!currentStore) return null;
-    return ordersByStore[currentStore.id]?.find(order => order.orderId === orderId) || null;
-  }, [currentStore, ordersByStore]);
-
-  const addOrders = useCallback((newOrders: RemovalOrder[]) => {
-    if (!currentStore) return;
-
-    const spreadsheetId = generateUniqueId();
-    const ordersWithMetadata = newOrders.map(order => ({
-      ...order,
-      spreadsheetId,
-      uploadDate: new Date().toISOString(),
-      storeId: currentStore.id,
-      processingStatus: 'new',
-      trackingNumbers: [],
-      carriers: [],
-      items: []
-    }));
-
-    setOrdersByStore(prev => {
-      const updatedOrders = [...(prev[currentStore.id] || []), ...ordersWithMetadata];
-      const newStats = calculateStats(updatedOrders);
-      
-      setStatsByStore(prevStats => ({
-        ...prevStats,
-        [currentStore.id]: newStats,
-      }));
-
-      setCurrentSpreadsheet(spreadsheetId);
-
-      return {
-        ...prev,
-        [currentStore.id]: updatedOrders,
-      };
-    });
-  }, [currentStore]);
-
-  const clearOrders = useCallback(() => {
-    if (!currentStore) return;
-
-    setOrdersByStore(prev => ({
-      ...prev,
-      [currentStore.id]: [],
-    }));
-
-    setStatsByStore(prev => ({
-      ...prev,
-      [currentStore.id]: calculateStats([]),
-    }));
-
-    setCurrentSpreadsheet(null);
-  }, [currentStore]);
-
-  const updateOrder = useCallback((updatedOrder: RemovalOrder) => {
-    if (!currentStore) return;
-
-    setOrdersByStore(prev => {
-      const orders = prev[currentStore.id] || [];
-      const updatedOrders = orders.map(order => {
-        if (order.id === updatedOrder.id) {
-          return {
-            ...order,
-            ...updatedOrder,
-            id: order.id
-          };
-        }
-        return order;
-      });
-      
-      setStatsByStore(prevStats => ({
-        ...prevStats,
-        [currentStore.id]: calculateStats(updatedOrders),
-      }));
-
-      return {
-        ...prev,
-        [currentStore.id]: updatedOrders,
-      };
-    });
-  }, [currentStore]);
-
-  const getSpreadsheets = useCallback(() => {
-    if (!currentStore || !ordersByStore[currentStore.id]) return [];
-
-    const spreadsheets = new Map<string, { id: string; name: string; date: string }>();
-    
-    ordersByStore[currentStore.id].forEach(order => {
-      if (order.spreadsheetId && !spreadsheets.has(order.spreadsheetId)) {
-        spreadsheets.set(order.spreadsheetId, {
-          id: order.spreadsheetId,
-          name: `Spreadsheet ${spreadsheets.size + 1}`,
-          date: order.uploadDate,
-        });
-      }
-    });
-
-    return Array.from(spreadsheets.values()).sort((a, b) => 
-      new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
-  }, [currentStore, ordersByStore]);
-
-  const getCurrentSpreadsheet = useCallback(() => currentSpreadsheet, [currentSpreadsheet]);
-
-  // Tracking related functions
-  const addTrackingEntries = useCallback((newEntries: TrackingEntry[]) => {
-    if (!currentStore) return;
-
-    const spreadsheetId = generateUniqueId();
-    const entriesWithMetadata = newEntries.map(entry => ({
-      ...entry,
-      spreadsheetId,
-      uploadDate: new Date().toISOString(),
-      storeId: currentStore.id,
-    }));
-
-    setTrackingEntriesByStore(prev => ({
-      ...prev,
-      [currentStore.id]: [...(prev[currentStore.id] || []), ...entriesWithMetadata],
-    }));
-
-    setCurrentTrackingSpreadsheet(spreadsheetId);
-  }, [currentStore]);
-
-  const clearTrackingEntries = useCallback(() => {
-    if (!currentStore) return;
-
-    setTrackingEntriesByStore(prev => ({
-      ...prev,
-      [currentStore.id]: [],
-    }));
-
-    setCurrentTrackingSpreadsheet(null);
-  }, [currentStore]);
-
-  const updateTrackingEntry = useCallback((updatedEntry: TrackingEntry) => {
-    if (!currentStore) return;
-
-    setTrackingEntriesByStore(prev => {
-      const entries = prev[currentStore.id] || [];
-      const updatedEntries = entries.map(entry => 
-        entry.id === updatedEntry.id ? { ...entry, ...updatedEntry } : entry
-      );
-
-      return {
-        ...prev,
-        [currentStore.id]: updatedEntries,
-      };
-    });
-  }, [currentStore]);
-
-  const getTrackingSpreadsheets = useCallback(() => {
-    if (!currentStore || !trackingEntriesByStore[currentStore.id]) return [];
-
-    const spreadsheets = new Map<string, { id: string; name: string; date: string }>();
-    
-    trackingEntriesByStore[currentStore.id].forEach(entry => {
-      if (entry.spreadsheetId && !spreadsheets.has(entry.spreadsheetId)) {
-        spreadsheets.set(entry.spreadsheetId, {
-          id: entry.spreadsheetId,
-          name: `Tracking Sheet ${spreadsheets.size + 1}`,
-          date: entry.uploadDate,
-        });
-      }
-    });
-
-    return Array.from(spreadsheets.values()).sort((a, b) => 
-      new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
-  }, [currentStore, trackingEntriesByStore]);
-
-  const getCurrentTrackingSpreadsheet = useCallback(() => currentTrackingSpreadsheet, [currentTrackingSpreadsheet]);
-
-  return (
-    <DataContext.Provider value={{
-      orders: currentSpreadsheet 
-        ? currentOrders.filter(order => order.spreadsheetId === currentSpreadsheet)
-        : currentOrders,
-      ordersByStore,
-      statsByStore,
-      stats: currentStats,
-      addOrders,
-      clearOrders,
-      updateOrder,
-      processOrder,
-      getOrderByOrderId,
-      getSpreadsheets,
-      getCurrentSpreadsheet,
-      setCurrentSpreadsheet,
-      trackingEntries: currentTrackingSpreadsheet
-        ? currentTrackingEntries.filter(entry => entry.spreadsheetId === currentTrackingSpreadsheet)
-        : currentTrackingEntries,
-      trackingEntriesByStore,
-      addTrackingEntries,
-      clearTrackingEntries,
-      updateTrackingEntry,
-      getTrackingSpreadsheets,
-      getCurrentTrackingSpreadsheet,
-      setCurrentTrackingSpreadsheet,
-      isLoading
-    }}>
-      {children}
-    </DataContext.Provider>
-  );
+  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
 export function useData() {
   const context = useContext(DataContext);
-  if (!context) {
+  if (context === undefined) {
     throw new Error('useData must be used within a DataProvider');
   }
   return context;
 }
+
+export default DataContext;

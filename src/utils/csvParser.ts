@@ -1,140 +1,94 @@
-import { RemovalOrder, TrackingEntry } from '../types';
-import { generateUniqueId } from './uniqueKey';
-
-function parseDate(dateString: string): string {
-  try {
-    // Handle ISO 8601 dates with timezone
-    return new Date(dateString).toISOString();
-  } catch {
-    return dateString;
-  }
+function parseDate(date_string: string): string {
+    try {
+        // Handle ISO 8601 dates with timezone
+        return new Date(date_string).toISOString();
+    } catch {
+        return date_string;
+    }
 }
 
-const parseCSVLine = (line: string): string[] => {
-  const result: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      result.push(current);
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  result.push(current);
-  
-  return result.map(field => 
-    field.trim()
-      .replace(/^"(.*)"$/, '$1')
-      .replace(/""/g, '"')
-  );
+const normalize_header = (header: string): string => {
+    return header
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '_') // Replace any non-alphanumeric with underscore
+        .replace(/^_+|_+$/g, '') // Remove leading/trailing underscores
+        .replace(/_+/g, '_'); // Replace multiple underscores with single
 };
 
-const normalizeHeader = (header: string): string => {
-  return header
-    .toLowerCase()
-    .trim()
-    .replace(/['"]/g, '')
-    .replace(/[\r\n]/g, '')
-    .replace(/-/g, '');
-};
-
-const expectedTrackingHeaders = [
-  'request-date',
-  'order-id',
-  'shipment-date',
-  'sku',
-  'fnsku',
-  'disposition',
-  'shipped-quantity',
-  'carrier',
-  'tracking-number',
-  'removal-order-type'
-];
-
-export function parseFile(fileContent: string, type: 'removal' | 'tracking'): RemovalOrder[] | TrackingEntry[] {
-  try {
-    if (!fileContent?.trim()) {
-      throw new Error('The file appears to be empty');
+export function parse_removal_file(csvContent: string) {
+    const lines = csvContent.split('\n');
+    if (lines.length < 2) {
+        console.error('CSV file has less than 2 lines');
+        return [];
     }
 
-    const lines = fileContent.split(/[\r\n]+/).filter(line => line.trim());
-    if (lines.length === 0) {
-      throw new Error('No data found in the file');
-    }
+    // Get headers and normalize them
+    const headers = parse_csv_line(lines[0]).map(normalize_header);
+    console.log('Normalized headers:', headers);
 
-    // Parse headers using the CSV line parser
-    const rawHeaders = parseCSVLine(lines[0]);
-    const headers = rawHeaders.map(normalizeHeader);
-    
-    const headerIndices = headers.reduce((acc, header, index) => {
-      acc[header] = index;
-      return acc;
-    }, {} as Record<string, number>);
+    // Parse each line
+    const orders = lines.slice(1)
+        .filter(line => line.trim())
+        .map((line, index) => {
+            try {
+                const values = parse_csv_line(line);
+                const order: any = {};
 
-    // Check for missing headers
-    const normalizedExpectedHeaders = expectedTrackingHeaders.map(normalizeHeader);
-    const missingHeaders = normalizedExpectedHeaders.filter(header => 
-      !headers.includes(header.replace(/-/g, ''))
-    );
+                headers.forEach((header, i) => {
+                    if (values[i] !== undefined) {
+                        let value = values[i].trim();
+                        
+                        // Convert specific fields
+                        if (header.includes('date')) {
+                            value = parseDate(value);
+                        } else if (header.includes('quantity')) {
+                            value = parseInt(value) || 0;
+                        }
+                        
+                        order[header] = value;
+                    }
+                });
 
-    if (missingHeaders.length > 0) {
-      throw new Error(
-        `Missing required headers in tracking file:\n` +
-        `Missing headers: ${missingHeaders.join(', ')}\n` +
-        `Found headers: ${rawHeaders.join(', ')}`
-      );
-    }
+                // Validate required fields
+                if (!order.sku || !order.order_id) {
+                    console.error(`Line ${index + 2}: Missing required fields`, order);
+                    return null;
+                }
 
-    return lines.slice(1)
-      .filter(line => line.trim())
-      .map((line, rowIndex) => {
-        try {
-          const values = parseCSVLine(line);
-          
-          if (values.length !== headers.length) {
-            throw new Error(
-              `Row ${rowIndex + 2} has ${values.length} columns but should have ${headers.length}`
-            );
-          }
+                return order;
+            } catch (error) {
+                console.error(`Error parsing line ${index + 2}:`, error);
+                return null;
+            }
+        })
+        .filter(Boolean); // Remove null entries
 
-          const getValue = (normalizedHeader: string) => {
-            const index = headerIndices[normalizeHeader(normalizedHeader)];
-            return index !== undefined ? values[index] || '' : '';
-          };
+    console.log('Parsed orders:', orders);
+    return orders;
+}
 
-          const carrier = getValue('carrier');
-          const trackingNumber = getValue('tracking-number');
-          
-          return {
-            id: generateUniqueId(),
-            requestDate: parseDate(getValue('request-date')),
-            orderId: getValue('order-id'),
-            shipmentDate: parseDate(getValue('shipment-date')),
-            sku: getValue('sku'),
-            fnsku: getValue('fnsku'),
-            disposition: getValue('disposition'),
-            shippedQuantity: parseInt(getValue('shipped-quantity')) || 0,
-            carrier: carrier,
-            trackingNumber: trackingNumber,
-            removalOrderType: getValue('removal-order-type'),
-            storeId: '',
-            spreadsheetId: '',
-            uploadDate: new Date().toISOString()
-          } as TrackingEntry;
-        } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-          throw new Error(`Error in row ${rowIndex + 2}: ${errorMessage}`);
+const parse_csv_line = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let in_quotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+            in_quotes = !in_quotes;
+        } else if (char === ',' && !in_quotes) {
+            result.push(current);
+            current = '';
+        } else {
+            current += char;
         }
-      });
-  } catch (err) {
-    const error = err instanceof Error ? err : new Error('Unknown error occurred');
-    console.error('File parsing error:', error);
-    throw error;
-  }
-}
+    }
+    result.push(current);
+
+    return result.map(field =>
+        field
+            .trim()
+            .replace(/^"(.*)"$/, '$1')
+            .replace(/""/g, '"')
+    );
+};

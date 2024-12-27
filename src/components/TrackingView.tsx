@@ -8,20 +8,26 @@ import OrderDetails from './processing/OrderDetails';
 import ProcessingForm from './processing/ProcessingForm';
 import WorkQueue from './processing/WorkQueue';
 import CompletedOrders from './processing/CompletedOrders';
+import { WorkingItem } from '../types';
 
 export default function TrackingView() {
   const { currentStore } = useStore();
-  const { orders, isLoading, getOrderByOrderId } = useData();
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
+  const { workingItems, completedOrders, isLoading } = useData();
+  const [selectedOrderId, setSelectedOrderId] = useState<string | undefined>();
 
-  const selectedOrder = selectedOrderId ? getOrderByOrderId(selectedOrderId) : null;
+  console.log('TrackingView - workingItems:', workingItems);
+  console.log('TrackingView - completedOrders:', completedOrders);
+
+  const selectedItem = selectedOrderId 
+    ? workingItems.find(item => item.order_id === selectedOrderId)
+    : null;
 
   const handleOrderSelect = (orderId: string) => {
     setSelectedOrderId(orderId);
   };
 
   const handleOrderComplete = () => {
-    setSelectedOrderId(null);
+    setSelectedOrderId(undefined);
   };
 
   if (!currentStore) {
@@ -41,7 +47,7 @@ export default function TrackingView() {
     );
   }
 
-  if (!orders.length) {
+  if (!workingItems || workingItems.length === 0) {
     return (
       <div className="p-4 text-center text-gray-500">
         No orders found. Upload a removal order file to get started.
@@ -51,31 +57,32 @@ export default function TrackingView() {
 
   return (
     <div className="space-y-6">
-      <DailySummary orders={orders} />
+      <DailySummary items={workingItems} />
       
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="space-y-6">
           <OrderScanner onOrderSelect={handleOrderSelect} />
           
-          {selectedOrder && (
+          {selectedItem && (
             <>
-              <OrderDetails order={selectedOrder} />
+              <OrderDetails item={selectedItem} />
               <ProcessingForm 
-                order={selectedOrder}
+                item={selectedItem}
                 onComplete={handleOrderComplete}
               />
             </>
           )}
           
           <WorkQueue 
-            orders={orders}
+            items={workingItems}
             onOrderSelect={handleOrderSelect}
             selectedOrderId={selectedOrderId}
           />
         </div>
         
         <div>
-          <CompletedOrders orders={orders} />
+          <h2 className="text-lg font-semibold mb-4">Completed Orders</h2>
+          <CompletedOrders items={completedOrders} />
         </div>
       </div>
     </div>

@@ -1,5 +1,7 @@
+import { RemovalOrder } from '../types';
+
 export function generateUniqueId() {
-  return `${Date.now()}-${Math.random().toString(36).substring(7)}`;
+  return crypto.randomUUID();
 }
 
 export function generateOrderKey(order: RemovalOrder) {

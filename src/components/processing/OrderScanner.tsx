@@ -3,18 +3,18 @@ import { Search } from 'lucide-react';
 import { useData } from '../../context/DataContext';
 
 interface OrderScannerProps {
-  onOrderFound: (orderId: string) => void;
+  onOrderSelect: (orderId: string) => void;
 }
 
-export default function OrderScanner({ onOrderFound }: OrderScannerProps) {
+export default function OrderScanner({ onOrderSelect }: OrderScannerProps) {
   const [orderInput, setOrderInput] = useState('');
-  const { getOrderByOrderId } = useData();
+  const { workingItems } = useData();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const order = getOrderByOrderId(orderInput.trim());
-    if (order) {
-      onOrderFound(order.orderId);
+    const item = workingItems.find(item => item.order_id === orderInput.trim());
+    if (item) {
+      onOrderSelect(item.order_id);
       setOrderInput('');
     } else {
       alert('Order not found. Please check the order number and try again.');

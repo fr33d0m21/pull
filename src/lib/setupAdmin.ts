@@ -9,23 +9,29 @@ export function getDefaultPermissions(role: UserRole): UserPermissions {
         viewSpreadsheet: true,
         manageStores: true,
         manageUsers: true,
-        processOrders: true
+        processOrders: true,
+        editAllStores: true,
+          viewAllStores: true
       };
     case 'manager':
       return {
         viewDashboard: true,
         viewSpreadsheet: true,
-        manageStores: true,
-        manageUsers: true,
-        processOrders: true
+          manageStores: false,
+          manageUsers: false,
+        processOrders: true,
+         viewAllStores: false,
+        editAllStores: false,
       };
-    case 'employee':
+    default:
       return {
         viewDashboard: true,
-        viewSpreadsheet: false,
+          viewSpreadsheet: false,
         manageStores: false,
         manageUsers: false,
-        processOrders: true
+        processOrders: true,
+        viewAllStores: false,
+        editAllStores: false
       };
   }
 }

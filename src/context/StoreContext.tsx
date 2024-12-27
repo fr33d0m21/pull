@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react';
-import type { Store, StoreContext as StoreContextType } from '../types';
+import type { Store, StoreContextType } from '../types';
 import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
 
@@ -7,7 +7,7 @@ const StoreContext = createContext<StoreContextType>({
   currentStore: null,
   setCurrentStore: () => {},
   stores: [],
-  addStore: async () => {},
+  addStore: async () => undefined,
   updateStore: async () => {},
   removeStore: async () => {},
 });
@@ -26,10 +26,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const fetchStores = async () => {
     try {
-      const { data, error } = await supabase
-        .from('stores')
-        .select('*')
-        .order('name');
+      let query = supabase.from('stores').select('*');
+
+      // Apply role-based filters
+      if (profile?.role === 'manager' && profile.managed_stores) {
+        query = query.in('id', profile.managed_stores);
+      } else if (profile?.role === 'employee' && profile.store_ids) {
+        query = query.in('id', profile.store_ids);
+      }
+
+      const { data, error } = await query.order('name');
 
       if (error) {
         console.error('Error fetching stores:', error);
@@ -37,6 +43,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       }
       
       setStores(data || []);
+
+      // Reset current store if it's no longer accessible
+      if (currentStore && !data?.some(store => store.id === currentStore.id)) {
+        setCurrentStore(null);
+      }
     } catch (error) {
       console.error('Error fetching stores:', error);
     }
